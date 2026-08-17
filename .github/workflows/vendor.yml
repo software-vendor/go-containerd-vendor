@@ -1,0 +1,93 @@
+name: containerd Vendor Generator
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - main
+
+env:
+  CONTAINERD_VERSION: "2.3.3"
+
+permissions:
+  contents: write
+
+jobs:
+  generate-vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+
+      - name: Download containerd source
+        run: |
+          set -euo pipefail
+          version="${CONTAINERD_VERSION}"
+          url="https://github.com/containerd/containerd/archive/refs/tags/v${version}.tar.gz"
+          curl --fail --location --retry 3 "${url}" -o containerd-source.tar.gz
+          rm -rf containerd-src
+          mkdir containerd-src
+          tar -xzf containerd-source.tar.gz \
+            -C containerd-src --strip-components=1
+
+      - name: Generate vendor tree
+        run: |
+          set -euo pipefail
+          cd containerd-src
+          rm -rf vendor
+          go mod vendor
+          test -f vendor/modules.txt
+
+      - name: Create deterministic vendor archive
+        id: package
+        run: |
+          set -euo pipefail
+          version="${CONTAINERD_VERSION}"
+          tar_name="containerd-v${version}-vendor.tar.gz"
+          tar_path="${GITHUB_WORKSPACE}/${tar_name}"
+
+          find containerd-src/vendor -type d -exec chmod 755 {} +
+          find containerd-src/vendor -type f -exec chmod 644 {} +
+          tar \
+            --format=gnu \
+            --sort=name \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            --mtime='@0' \
+            -czf "${tar_path}" \
+            -C containerd-src vendor
+          sha256sum "${tar_path}" > "${tar_path}.sha256"
+
+          echo "TAR_PATH=${tar_path}" >> "${GITHUB_OUTPUT}"
+          echo "VERSION=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: containerd-vendor
+          path: |
+            ${{ steps.package.outputs.TAR_PATH }}
+            ${{ steps.package.outputs.TAR_PATH }}.sha256
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.package.outputs.VERSION }}"
+          tar_path="${{ steps.package.outputs.TAR_PATH }}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" \
+              "${tar_path}" "${tar_path}.sha256" --clobber
+          else
+            gh release create "${tag}" \
+              "${tar_path}" "${tar_path}.sha256" \
+              --title "containerd ${tag} vendor" \
+              --notes "Generated vendor dependencies for containerd/containerd ${tag}."
+          fi

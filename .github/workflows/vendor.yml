@@ -62,7 +62,10 @@ jobs:
             --mtime='@0' \
             -czf "${tar_path}" \
             -C containerd-src vendor
-          sha256sum "${tar_path}" > "${tar_path}.sha256"
+          (
+            cd "$(dirname "${tar_path}")"
+            sha256sum "$(basename "${tar_path}")"
+          ) > "${tar_path}.sha256"
 
           echo "TAR_PATH=${tar_path}" >> "${GITHUB_OUTPUT}"
           echo "VERSION=${version}" >> "${GITHUB_OUTPUT}"
